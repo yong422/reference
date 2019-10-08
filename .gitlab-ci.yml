@@ -1,0 +1,45 @@
+# reference ci yml file
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+
+stages:
+  - build
+  - test
+
+build:
+  stage: build
+  only: ['/^develop.*/', 'staging', 'master']
+  script:
+    - mkdir -p build
+    - cd build
+    - rm -f CMakeCache.txt
+    - cmake ../
+    - make cppcheck
+    - make reference
+  cache:
+    key: dev-cen7-refcache
+    paths:
+      - build/
+      - libtemp/
+  tags:
+    - dev-cen7
+
+test:
+  stage: test
+  only: ['/^develop.*/', 'staging', 'master']
+  script:
+    - cd build
+    - cmake ../ -DPASS_EXTERNAL_BUILD=ON
+    - make reference-test
+    - test/reference-test
+  cache:
+    key: dev-cen7-refcache
+    paths:
+      - build/
+      - libtemp/
+    policy: pull
+  tags:
+    - dev-cen7
+  variables:
+    GIT_SUBMODULE_STRATEGY: ""

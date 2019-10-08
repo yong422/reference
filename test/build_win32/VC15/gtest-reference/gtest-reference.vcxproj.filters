@@ -1,0 +1,61 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="src">
+      <UniqueIdentifier>{cb1f1e89-b6d2-47f8-8f1d-1835c1b0cd0d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="test">
+      <UniqueIdentifier>{5a552723-76fd-41d9-95b6-30689bb4f487}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="test\windows">
+      <UniqueIdentifier>{21a369b0-b6d4-4c16-bf4b-95c45b01b31d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더">
+      <UniqueIdentifier>{1f23ca55-c5e7-4aa8-937f-7d15c6c9d320}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\gstd">
+      <UniqueIdentifier>{0dee0410-8025-40a9-83df-4f365b41f454}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\..\..\version\test_version.cpp">
+      <Filter>test</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\dictionary\dictionary-test.cpp">
+      <Filter>test</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\windows\test_strutil.cpp">
+      <Filter>test\windows</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\main.cpp" />
+    <ClCompile Include="..\..\..\..\src\gstd\check\version.cpp">
+      <Filter>src\gstd</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\src\gstd\windows\strutil.cpp">
+      <Filter>src\gstd</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\src\gstd\container\dictionary.cpp">
+      <Filter>src\gstd</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\numeric\test_numeric.cpp">
+      <Filter>test</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\src\gstd\util\filetool.cpp">
+      <Filter>src\gstd</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\src\gstd\windows\directory_control.cpp">
+      <Filter>src\gstd</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\windows\test_directory_control.cpp">
+      <Filter>test\windows</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\..\stdafx.h">
+      <Filter>헤더</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
+</Project>
