@@ -20,6 +20,22 @@
 
 ## History
 
+### v1.3.2
+
+**Implemented enhancements :**
+
+- redis client 기능 추가
+
+  - MultipleSet (MSET, MSETNX)
+  - MultipleGet (MGET)
+  - GetSet
+  - uint64_t get, set
+  - distributed Lock
+
+    - redlock algorithm
+
+- uuid generator 추가
+
 ### v1.3.1
 
 **Implemented enhancements :**
