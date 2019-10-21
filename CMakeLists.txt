@@ -285,8 +285,22 @@ SET ( SRC_DIRS
     )
 
 FOREACH ( dir ${SRC_DIRS})
+
   FILE (GLOB TEMP_FILES "${dir}/*.cpp" )
+
+  FOREACH ( item ${TEMP_FILES})
+
+  # asyncsock.cpp 의 경우 xms 소스코드 참조형태로 전체적인 수정전까지 빌드제외
+  #MESSAGE(STATUS "${item} == ${PROJECT_SOURCE_DIR}/asyncsock.cpp\n") # 디버깅용 출력
+  IF ( ${item} STREQUAL ${PROJECT_SOURCE_DIR}/asyncsock.cpp )
+    LIST(REMOVE_ITEM TEMP_FILES "${PROJECT_SOURCE_DIR}/asyncsock.cpp")
+
+  ENDIF()
+
+  ENDFOREACH()
+  #MESSAGE (STATUS ${TEMP_FILES})
   SET ( SOURCES ${SOURCES} ${TEMP_FILES} )
+
 ENDFOREACH()
 
 # static library 파일 빌드

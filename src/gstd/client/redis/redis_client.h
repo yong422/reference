@@ -1,6 +1,7 @@
 #ifndef GSTD_CLIENT_REDIS_CLIENT_H
 #define GSTD_CLIENT_REDIS_CLIENT_H
 #include <string>
+#include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
 #include "hiredis.h"
@@ -9,8 +10,11 @@ namespace gstd {
 namespace client {
 namespace redis {
 
-using HashStoreMap = std::unordered_map<std::string, std::string>;
-using HashStoreFields = std::unordered_set<std::string>;
+using MultipleData      = std::unordered_map<std::string /*key*/, std::string /*value*/>; 
+using HashStoreMap      = std::unordered_map<std::string, std::string>;
+using HashStoreFields   = std::unordered_set<std::string>;
+
+const uint32_t kLockTimeout = 1000;  //  1 secs
 
 //  @brief  hiredis wrapper class
 //          Redis client
@@ -36,21 +40,43 @@ class Client{
   //          key 에 해당하는 value 값을 가져온다.
   //  @return 0 : 값이 있음, 1 : 값이 없음(NULL), -1: 그외 에러.
 
-  int Get(std::string key, std::string& val);
-  int Get(std::string key, long long& val);
-  int Get(std::string key, double& val);
-  int Get(std::string key, int& val);
-  int Get(std::string key, unsigned int& val);
+  int Get(const std::string& key, std::string&   val);
+  int Get(const std::string& key, long long&     val);
+  int Get(const std::string& key, double&        val);
+  int Get(const std::string& key, int&           val);
+  int Get(const std::string& key, uint32_t&      val);
+  int Get(const std::string& key, uint64_t&      val);
+
+  //  @brief  GetMultiple function
+  //          multiple_data 에 저장된 key 해당하는 value 값들을 가져온다.
+  //          is_exists_fail = true 일 경우
+  //  @return 0 : 값이 있음, 1 : 값이 없음(NULL), -1: 그외 에러.
+  int GetMultiple(MultipleData& multiple_data, uint32_t& get_count);
+
+  //  @brief  GetSet function
+  //          key 에 해당하는 value 값을 redis 에 저장한다.
+  //          저장하면서 기존에 key 에 등록된 값을 value 에 가져온다.
+  //  @return 0 : 값이 있음, 1 : 값이 없음(NULL), -1: 그외 에러.
+  int GetSet(const std::string& key, std::string&  val);
+  int GetSet(const std::string& key, uint64_t&     val);
+  int GetSet(const std::string& key, uint32_t&     val);
 
   //  @brief  Set function
   //          key 에 해당하는 value 값을 Redis-server에 저장.
   //  @return 0 : success, 1 : null, -1 : error
-  int Set(const char* key, const char* val);
-  int Set(std::string key, std::string val);
-  int Set(std::string key, long long val);
-  int Set(std::string key, unsigned int val);
-  int Set(std::string key, int val);
-  int Set(std::string key, double val);
+  int Set(const char* key, const char*  val);
+  int Set(const std::string& key, std::string  val);
+  int Set(const std::string& key, long long    val);
+  int Set(const std::string& key, uint32_t     val);
+  int Set(const std::string& key, int          val);
+  int Set(const std::string& key, double       val);
+  int Set(const std::string& key, uint64_t     val);
+
+  //  @brief  SetMultiple function
+  //          multiple_data 에 저장된 key / value list 를 저장한다.
+  //          is_exists_fail = true 일 경우, 이미 존재하는 key 일 경우 전체 실패처리.(MSETNX)
+  //  @return 0 : success, 1 : exists key, -1: error
+  int SetMultiple(const MultipleData& hdata, bool if_exists_fail=false);
 
   //  @brief  Hash store mset function
   //          redis Hash store 에 key value 데이터를 저장한다.
@@ -93,10 +119,26 @@ class Client{
 
   // @brief key 또는 key list 에 해당하는 key value 를 삭제하는 함수
   //        삭제된 key-value 의 개수를 리턴하며, 실패시 -1 을 리턴한다. 에러메시지 참조
-  int Delete(std::string key);
-  int Delete(std::vector<std::string> keys);
+  int Delete(const std::string&                         key);
+  int Delete(const std::vector<std::string>&            keys);
+  int Delete(const std::initializer_list<std::string>&  keys);
+
+  // @brief 분산 잠금을 구현하기 위한 Lock 함수
+  // @params  std::string key 접근을 제어하고자 하는 key, 
+  //                          내부에서 해당 key에 대한 잠금키를 생성하는데 사용.
+  //          uint32_t        잠금을 유지하는 타임아웃(ms)
+  // @return  0 : Lock, 1 : lock was not acquired, -1 : error
+  int32_t Lock(const std::string key, const uint32_t& timeout = kLockTimeout) noexcept;
+  //int32_t LockContinue(const std::string key, const uint32_t& timeout = kLockTimeout) noexcept;
+  int32_t Unlock(const std::string key) noexcept;
+
+protected:
+  int Set_(const std::string& command) noexcept; 
+  inline std::string GetUniqueId_(const std::string& key) noexcept;
+  inline std::string GetLockInstanceKey_(const std::string& key) noexcept;
 
 private:
+  // private variable
   std::string   host_           = "127.0.0.1";
   std::string   error_message_  = "";
   std::string   password_       = "";
@@ -108,6 +150,11 @@ private:
   bool          is_auth_        = false;
   redisContext* redis_context_  = nullptr;
   redisReply*   redis_reply_    = nullptr;
+
+  //  variable for redlock
+  //  현재 redis connection 에서 사용중인 잠금에 대한 캐시(lock key, value) 정보
+  //  lock key -> (unique value, )
+  std::unordered_map< std::string, std::pair<std::string, bool> >  lock_instance_cache_;
 };
 } // namespace redis
 } // namespace client

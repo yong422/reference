@@ -62,6 +62,7 @@ SET ( SRCS
       net/test_ip.cpp
       net/test_hostaddr.cpp
       util/test_datetime.cpp
+      util/test_string_generator.cpp
       main.cpp )
 
 ADD_EXECUTABLE ( ${TESTER_NAME} ${SRCS} )

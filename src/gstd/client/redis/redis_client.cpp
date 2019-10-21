@@ -4,6 +4,7 @@
 #include <string>
 #include <algorithm>
 #include <unistd.h>
+#include "gstd/util/string_generator.h"
 #include "gstd/util/strtool.h"
 #include "gstd/check/numeric.h"
 #include "gstd/client/redis/redis_client.h"
@@ -57,23 +58,23 @@ void Client::FreeResult()
 //  type = 0
 inline int parsing_get_replyObject(redisReply* re, std::string& msg)
 {
-  int ret=-1;
+  int result = -1;
   if (!re) {
     msg.assign("Get error: can't allocate redis replyObject");
   } else if (re->type == REDIS_REPLY_NIL) {
     msg.assign("null");
-    ret=1;
+    result = 1;
    }else if (re->type == REDIS_REPLY_ERROR) {
     msg.assign("Error : ");
     msg += std::string(re->str);
   } else if (re->type == REDIS_REPLY_STATUS) {
     msg.assign("Status : ");
     msg += std::string(re->str);
-    ret=1;
+    result = 1;
   } else {
-    ret=0;
+    result = 0;
   }
-  return ret;
+  return result;
 }
 
 
@@ -81,26 +82,30 @@ inline int parsing_get_replyObject(redisReply* re, std::string& msg)
 //  결과에맞는 에러메시지를 버퍼에 추가하며 결과값을 리턴한다.
 inline int parsing_set_replyObject(redisReply* re, std::string& msg)
 {
-  int ret=-1;
+  int result = -1;
   if (!re) {
     msg.assign("Set error: can't allocate redis replyObject");
   } else if (re->type == REDIS_REPLY_NIL) {
     msg.assign("null");
+    result = 1;
   } else if (re->type == REDIS_REPLY_ERROR) {
     msg.assign("Error : ");
     msg += std::string(re->str);
   } else if (re->type == REDIS_REPLY_STATUS) {
     if (!strcmp(re->str, "OK")) {
-      ret=0;
+      result = 0;
     } else {
       msg.assign("Status : ");
       msg += std::string(re->str);
     }
+  } else if (re->type == REDIS_REPLY_INTEGER) {
+    // SETNX, MSETNX 등의 method 에서 integer return 이 존재함.
+    result = 0;
   } else {
     msg.assign("Unknown type : ");
     msg += std::string(std::to_string(re->type));
   }
-  return ret;
+  return result;
 }
 
 //  redis hash store 에 key 에 해당하는 field 와 value 를 삭제한다.
@@ -128,6 +133,31 @@ int Client::DeleteHash(const std::string& key, const HashStoreFields& hdata, uin
   return result;
 }
 
+//  여러개의 key 에 value 를 추가한다.
+//  value 값이 비어있을 경우 저장하지 않는다.
+int Client::SetMultiple(const HashStoreMap& hdata, bool if_exists_fail)
+{
+  int result = 0;
+  std::string mset_string = if_exists_fail ? "MSETNX" : "MSET";
+  for (const auto& val : hdata) {
+    if (!val.first.empty() && !val.second.empty()) {
+      mset_string += " " + val.first + " " + val.second;
+    }
+  }
+  redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, mset_string.c_str()));
+  if (!(result = parsing_set_replyObject(redis_reply_, error_message_))) {
+    //  MSETNX 일 경우 중복된 키가 존재하면 실패처리된다.
+    //  성공시 redis 로 부터 integer 1, 실패시 integer 0 을 리턴받는다.  
+    if (if_exists_fail) {
+      if (redis_reply_->type == REDIS_REPLY_INTEGER) {
+        result = (redis_reply_->integer == 1 ? 0 : 1);
+      }
+    }
+  }
+  FreeResult();
+  return result;
+}
+
 //  redis hash store 의 key 에 field value 들을 추가한다.
 //  value 값이 비어있을 경우 저장하지 않는다.
 int Client::SetHash(const std::string& key, const HashStoreMap& hdata)
@@ -141,6 +171,44 @@ int Client::SetHash(const std::string& key, const HashStoreMap& hdata)
   }
   redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, hset_string.c_str()));
   result = parsing_set_replyObject(redis_reply_, error_message_);
+  FreeResult();
+  return result;
+}
+
+//  multiple key 에 대한 values 를 가져온다.
+//  가져온 key 의 string 값이 redis null string 결과 인 경우 없는 결과로 처리한다. nil -> ""
+//  가져온 정상적인 value 개수는 get_count 변수에 저장하여 리턴한다.
+int Client::GetMultiple(MultipleData& multiple_data, uint32_t& get_count)
+{
+  int result = 0;
+  get_count = 0;
+  std::string mget_string = "MGET";
+  for (const auto& val: multiple_data) {
+    if (!val.first.empty()) mget_string += " " + val.first;
+  }
+  redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, mget_string.c_str()));
+  if (!(result = parsing_get_replyObject(redis_reply_, error_message_)) && redis_reply_->element) {
+    int mget_index = 0;
+    for (auto& val: multiple_data) {
+      if (mget_index >= redis_reply_->elements) break;
+      if (!val.first.empty()) {
+        if (redis_reply_->element[mget_index]->type == REDIS_REPLY_INTEGER) {
+          val.second = std::to_string(redis_reply_->element[mget_index]->integer);
+          ++get_count;
+        } else if (redis_reply_->element[mget_index]->type == REDIS_REPLY_STRING) {
+          val.second = redis_reply_->element[mget_index]->str;
+          ++get_count;
+        } else if (redis_reply_->element[mget_index]->type == REDIS_REPLY_NIL) {
+          val.second = "";
+        }
+        ++mget_index;
+      }
+    }
+    // redis mget 결과의 경우 key 의 value가 없어도 redisCommand 실행 결과에서 각 key 에 해당하는 element 에
+    // nil(결과없음) 이 넘어오므로 실제 가져온 결과는 없음 처리
+    // 함수 리턴은 값이 없으므로 1 리턴
+    if (!get_count) result = 1;  
+  }
   FreeResult();
   return result;
 }
@@ -241,15 +309,15 @@ int Client::DecreaseHashField(const std::string& key, const std::string& field,
 
 int Client::Increase(const char* key, long long& val)
 {
-  int ret=0;
+  int result = 0;
   redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "INCR %s", key));
-  if (!(ret = parsing_get_replyObject(redis_reply_, error_message_))) {
+  if (!(result = parsing_get_replyObject(redis_reply_, error_message_))) {
     if (REDIS_REPLY_INTEGER == redis_reply_->type) {
       val = redis_reply_->integer;
     }  
   }
   FreeResult();
-  return ret;  
+  return result;  
 }
 
 
@@ -260,36 +328,82 @@ int Client::Increase(const char* key, long long& val)
 //         주로 key의 값이 string 인 경우 에러발생.
 int Client::Decrease(const char* key, long long& val)
 {
-  int ret=0;
+  int result = 0;
   redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "DECR %s", key));
-  if (!(ret = parsing_get_replyObject(redis_reply_, error_message_))) {
+  if (!(result = parsing_get_replyObject(redis_reply_, error_message_))) {
     if (REDIS_REPLY_INTEGER == redis_reply_->type) {
       val = redis_reply_->integer;
     }  
   }
   FreeResult();
-  return ret;  
+  return result;  
 }
 
-int Client::Get(std::string key, std::string& val)
+int Client::GetSet(const std::string& key, std::string& val)
 {
-  int ret=0;
-  redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "GET %s", key.c_str()));
-  if (!(ret = parsing_get_replyObject(redis_reply_, error_message_))) {
+  int result = 0;
+  redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "GETSET %s %s", key.c_str(), val.c_str()));
+  if (!(result = parsing_get_replyObject(redis_reply_, error_message_))) {
     if(REDIS_REPLY_STRING == redis_reply_->type){
       val.assign(redis_reply_->str);
     }  
   }
   FreeResult();
-  return ret;
+  return result;
 }
 
-int Client::Get(std::string key, long long& val)
+int Client::GetSet(const std::string& key, uint64_t& val)
 {
-  int ret=0;
+  int result = 0;
+  std::string buf;
+  redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "GETSET %s %llu", key.c_str(), val));
+  if (!(result = parsing_get_replyObject(redis_reply_, error_message_))) {
+    if (REDIS_REPLY_STRING == redis_reply_->type) {
+      buf.assign(redis_reply_->str);
+      if (std::count_if(buf.begin(), buf.end(), [](unsigned char ch) {
+        return (std::isdigit(ch) == 0) ? true : false;})){
+        error_message_ = std::string("Error : non numeric => ") + buf;
+        result = -1;
+      } else {
+        val = strtoull(buf.c_str(), nullptr, 10);
+      }
+    } else if (REDIS_REPLY_INTEGER == redis_reply_->type) {
+      val = redis_reply_->integer;
+    }
+  }
+  FreeResult();  
+  return result;
+}
+
+int Client::GetSet(const std::string& key, uint32_t& val)
+{
+  uint64_t get_set_value = static_cast<uint64_t>(val);
+  int result = GetSet(key, get_set_value);
+  if (std::numeric_limits<uint32_t>::max() < get_set_value) {
+    result = -1;
+    error_message_ = std::string("Error : exceed maxmimum => ") + std::to_string(get_set_value);
+  }
+}
+
+int Client::Get(const std::string& key, std::string& val)
+{
+  int result = 0;
+  redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "GET %s", key.c_str()));
+  if (!(result = parsing_get_replyObject(redis_reply_, error_message_))) {
+    if(REDIS_REPLY_STRING == redis_reply_->type){
+      val.assign(redis_reply_->str);
+    }  
+  }
+  FreeResult();
+  return result;
+}
+
+int Client::Get(const std::string& key, long long& val)
+{
+  int result = 0;
   std::string buf;
   redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "GET %s", key.c_str()));
-  if (!(ret = parsing_get_replyObject(redis_reply_, error_message_))) {
+  if (!(result = parsing_get_replyObject(redis_reply_, error_message_))) {
     if (REDIS_REPLY_STRING == redis_reply_->type) {
       buf.assign(redis_reply_->str);
       __CPRINTF_SUCCESS(is_debug_, "Client::Get(long long)");
@@ -297,7 +411,7 @@ int Client::Get(std::string key, long long& val)
       if (std::count_if(buf.begin(), buf.end(), [](unsigned char ch) {
         return (std::isdigit(ch) == 0) ? true : false;})){
         error_message_ = std::string("Error : non numeric => ") + buf;
-        ret = -1;
+        result = -1;
       } else {
         val = strtoll(buf.c_str(), nullptr, 10);
       }
@@ -306,15 +420,15 @@ int Client::Get(std::string key, long long& val)
     }
   }
   FreeResult();  
-  return ret;
+  return result;
 }
 
-int Client::Get(std::string key, double& val)
+int Client::Get(const std::string& key, double& val)
 {
-  int ret=0;
+  int result = 0;
   std::string buf;
   redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "GET %s", key.c_str()));
-  if (!(ret = parsing_get_replyObject(redis_reply_, error_message_))) {
+  if (!(result = parsing_get_replyObject(redis_reply_, error_message_))) {
     if (REDIS_REPLY_STRING == redis_reply_->type) {
       buf.assign(redis_reply_->str);
       std::string chkBuf = buf;
@@ -325,22 +439,22 @@ int Client::Get(std::string key, double& val)
       if (std::count_if(chkBuf.begin(), chkBuf.end(), [](unsigned char ch) {
         return (std::isdigit(ch) == 0) ? true : false;})){
         error_message_ = std::string("Error : non numeric => ") + buf;
-        ret = -1;
+        result = -1;
       } else {
         val = strtod(buf.c_str(), nullptr);
       }
     }
   }
   FreeResult();  
-  return ret;
+  return result;
 }
 
-int Client::Get(std::string key, int& val)
+int Client::Get(const std::string& key, int& val)
 {
-  int ret=0;
+  int result = 0;
   std::string buf;
   redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "GET %s", key.c_str()));
-  if (!(ret = parsing_get_replyObject(redis_reply_, error_message_))) {
+  if (!(result = parsing_get_replyObject(redis_reply_, error_message_))) {
     if (REDIS_REPLY_STRING == redis_reply_->type) {
       buf.assign(redis_reply_->str);
       __CPRINTF_SUCCESS(is_debug_, "Client::Get(int)");
@@ -348,7 +462,7 @@ int Client::Get(std::string key, int& val)
       if (std::count_if(buf.begin(), buf.end(), [](unsigned char ch) {
         return (std::isdigit(ch) == 0) ? true : false;})){
         error_message_ = std::string("Error : non numeric => ") + buf;
-        ret = -1;
+        result = -1;
       } else {
       val = static_cast<int>(strtol(buf.c_str(), nullptr, 10));
       }
@@ -357,94 +471,94 @@ int Client::Get(std::string key, int& val)
     }
   }
   FreeResult();  
-  return ret;
+  return result;
 }
 
-int Client::Get(std::string key, unsigned int& val)
+int Client::Get(const std::string& key, uint32_t& val)
 {
-  int ret=0;
+  uint64_t get_value = 0;
+  int result = Get(key, get_value);
+  if (!result && get_value <= static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
+    val = static_cast<uint32_t>(get_value);
+  } else {
+    result = -1;
+  }
+  return result;
+}
+
+int Client::Get(const std::string& key, uint64_t& val)
+{
+  int result = 0;
   std::string buf;
   redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "GET %s", key.c_str()));
-  if (!(ret = parsing_get_replyObject(redis_reply_, error_message_))) {
+  if (!(result = parsing_get_replyObject(redis_reply_, error_message_))) {
     if (REDIS_REPLY_STRING == redis_reply_->type) {
       buf.assign(redis_reply_->str);
-      __CPRINTF_SUCCESS(is_debug_, "Client::Get(unsigned int)");
-      __CPRINTF_SUCCESS(is_debug_, buf.c_str());
       if (std::count_if(buf.begin(), buf.end(), [](unsigned char ch) {
         return (std::isdigit(ch) == 0) ? true : false;})){
         error_message_ = std::string("Error : non numeric => ") + buf;
-        ret = -1;
+        result = -1;
       } else {
-        val = static_cast<unsigned int>(strtoul(buf.c_str(), nullptr, 10));
+        val = static_cast<uint64_t>(strtoul(buf.c_str(), nullptr, 10));
       }
     } else if (REDIS_REPLY_INTEGER == redis_reply_->type) {
       val = redis_reply_->integer;
     }
   }
   FreeResult();  
-  return ret;
+  return result;
 }
-
 
 // 이하 Set 동일.
 // key 에 해당하는 val argument 를 Redis 에 저장한다.
 // parsing_set_replyObject 함수로 결과를 체크 한 후 리턴한다.
 // 에러가 발생시 에러버퍼에 저장되어있다.
-int Client::Set(std::string key, std::string val)
+int Client::Set(const std::string& key, std::string val)
 {
   return Set(key.c_str(), val.c_str());
 }
 
 int Client::Set(const char* key, const char* val)
 {
-  int ret = -1;
-  if(key != nullptr && val != nullptr){
-    redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "SET %s %s", key, val));
-    //! redis set reply 결과값을 parsing
-    ret = parsing_set_replyObject(redis_reply_, error_message_);
-  }
-  FreeResult();
-  return ret;
+  return Set_(util::StringTool::StringPrintf("SET %s %s", key, val));
 }
 
-int Client::Set(std::string key, long long val)
+int Client::Set(const std::string& key, long long val)
 {
-  int ret=0;
-  redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "SET %s %lld", key.c_str(), val));
-  //! redis set reply 결과값을 parsing
-  ret = parsing_set_replyObject(redis_reply_, error_message_);
-  FreeResult();
-  return ret;
+  return Set_(util::StringTool::StringPrintf("SET %s %lld", key.c_str(), val));
 }
 
-int Client::Set(std::string key, double val)
+int Client::Set(const std::string& key, double val)
 {
-  int ret=0;
-  redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "SET %s %.4f", key.c_str(), val));
-  ret = parsing_set_replyObject(redis_reply_, error_message_);
-  FreeResult();
-  return ret;
+  return Set_(util::StringTool::StringPrintf("SET %s %.4f", key.c_str(), val));
 }
 
-int Client::Set(std::string key, int val)
+int Client::Set(const std::string& key, int val)
 {
-  int ret=0;
-  redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "SET %s %d", key.c_str(), val));
-  ret = parsing_set_replyObject(redis_reply_, error_message_);
-  FreeResult();
-  return ret;
+  return Set_(util::StringTool::StringPrintf("SET %s %d", key.c_str(), val));
 }
 
-int Client::Set(std::string key, unsigned int val)
+int Client::Set(const std::string& key, uint32_t val)
 {
-  int ret=0;
-  redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, "SET %s %u", key.c_str(), val));
-  ret = parsing_set_replyObject(redis_reply_, error_message_);
-  FreeResult();
-  return ret;
+  return Set_(util::StringTool::StringPrintf("SET %s %u", key.c_str(), val));
 }
 
-int Client::Delete(std::string key)
+int Client::Set(const std::string& key, uint64_t val)
+{
+  return Set_(util::StringTool::StringPrintf("SET %s %llu", key.c_str(), val));
+}
+
+//* common private Set
+int Client::Set_(const std::string& command) noexcept
+{
+  int result = 0;
+  redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, command.c_str()));
+  result = parsing_set_replyObject(redis_reply_, error_message_);
+  FreeResult();
+  return result;
+}
+
+int Client::Delete(const std::string& key)
 {
   int result = -1;
   std::string keys_string = "DEL " + key;
@@ -461,7 +575,7 @@ int Client::Delete(std::string key)
   return result;
 }
 
-int Client::Delete(std::vector<std::string> keys)
+int Client::Delete(const std::vector<std::string>& keys)
 {
   std::string keys_string = "";
   int count = 0;
@@ -473,13 +587,18 @@ int Client::Delete(std::vector<std::string> keys)
   return Delete(keys_string);
 }
 
+int Client::Delete(const std::initializer_list<std::string>& keys)
+{
+  std::vector<std::string> keys_vector(keys);
+  return Delete(keys_vector);
+}
 
 //  @brief  redis-server 로 접속한다.
 //          설정된 접속정보를 사용.
 bool Client::Connect()
 {
   bool auth = false;
-  bool ret = false;
+  bool result = false;
   this->Close();
   int lsec = 0, usec = 0, lretries = 0;
   if( timeout_ >= 1000000) {
@@ -537,20 +656,73 @@ bool Client::Connect()
                 + std::to_string(db_index_);
               __CPRINTF_ERROR(is_debug_, error_message_.c_str());
             } else {
-              ret = true;
+              result = true;
             }
             FreeResult();
           } else {
             error_message_.assign("DB select error: can't allocate redis replyObject");
           }
         } else {
-          ret = true;
+          result = true;
         }
       }
       break;
     }
   }
-  return  ret;
+  return result;
+}
+
+int32_t Client::Lock(const std::string key, const uint32_t& timeout) noexcept {
+  std::string lock_instance_key = GetLockInstanceKey_(key);
+  return Set_(util::StringTool::StringPrintf("SET %s %s NX PX %u",
+                                              lock_instance_key.c_str(),
+                                              GetUniqueId_(lock_instance_key).c_str(),
+                                              timeout));
+}
+
+// int32_t Client::LockContinue(const std::string key, const uint32_t& timeout) noexcept {
+
+// }
+
+int32_t Client::Unlock(const std::string key) noexcept {
+  std::string lock_instance_key = GetLockInstanceKey_(key);
+  std::string unique_id = "";
+  int32_t result = Get(lock_instance_key, unique_id);
+  if (!result) {
+    if (!unique_id.compare(GetUniqueId_(lock_instance_key))) {
+      // 가져온 unique id 와 동일한 id 일 경우 해당 커넥션의  lock instance 이므로 해제.
+      if (Delete(lock_instance_key) >= 0) {
+        // lock instance 삭제.
+        result = 0;
+      }
+    } else {
+      //  가져온 unique id 가 다를 경우 이미 만료되어 다른 커넥션으로 lock 의 권한이 넘어간 상태.
+      result = 1;
+    }
+  } else if (result == 1) {
+    // 만료되거나 다른 session 에서 Unlock 이후 lock instance 가 사라진 경우.
+    // Unlock 에 대한 정상 처리.
+    result = 0;
+  }
+  // result = -1 인 경우 기타 오류
+  return result;
+}
+
+std::string Client::GetUniqueId_(const std::string& lock_instance_key) noexcept {
+  std::string result = "";
+  auto it = lock_instance_cache_.find(lock_instance_key);
+  if (it != lock_instance_cache_.end()) {
+    result = it->second.first;
+  } else {
+    result = util::GenerateUUID(32);
+    lock_instance_cache_.insert(std::make_pair(lock_instance_key, 
+                                              std::make_pair(result, true)));
+  }
+  return result;
+}
+
+std::string Client::GetLockInstanceKey_(const std::string& key) noexcept {
+  return std::string(key + "redlock-key");
 }
 
 } // namespace redis
