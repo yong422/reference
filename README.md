@@ -20,7 +20,7 @@
 
 ## History
 
-### v1.3.2
+### v1.5.0
 
 **Implemented enhancements :**
 
@@ -30,11 +30,15 @@
   - MultipleGet (MGET)
   - GetSet
   - uint64_t get, set
-  - distributed Lock
-
-    - redlock algorithm
+  - CheckAndSet, Watch, Unwatch, Multi, Exec
 
 - uuid generator 추가
+
+### v1.4.0
+
+**Implemented enhancements :**
+
+- conan package manager 적용
 
 ### v1.3.1
 
@@ -154,15 +158,6 @@
 - automake > 1.14
 - libtool > CentOS 5 설치가능한 최신버전
 
-cmake build option
-
-- WITH_OPENSSL_BUILD (Default ON) : OpenSSL external project 추가
-- WITH_LIBCURL_BUILD (Default ON) : Curl external project 추가
-- WITH_HTTP_CLIENT_BUILD (Default ON) : http-client 빌드. libcurl, openssl external 포함하여 빌드
-- `WITH_REFERENCE_TEST (Default ON)` : unit test 추가
-- `PASS_EXTERNAL_BUILD (Default OFF)` : 개발작업시 external project 의 경우 1번의 빌드만 필요하므로  
-  ON 으로 설정할 경우 모든 external project 에 대한 configure, build 작업은 건너뛰고 참조만 한다.
-
 상세 빌드 방법
 
 ```bash
@@ -173,8 +168,7 @@ $
 $ mkdir -p build
 $ cd build
 $ cmake ../
-$ make
-$ make test
+$ make run-test
 ```
 
 출력 폴더
@@ -269,3 +263,4 @@ $ make test
     }
   }
   ```
+  

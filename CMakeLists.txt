@@ -7,248 +7,53 @@ CMAKE_MINIMUM_REQUIRED (VERSION 2.8)
 # 프로젝트명 설정
 PROJECT ( reference )
 
-INCLUDE (ExternalProject)
+FIND_PACKAGE ( PythonInterp )
+# conan cmake 설치, conan 을 이용한 라이브러리 설치
+IF ( NOT EXISTS "${CMAKE_BINARY_DIR}/conan.cmake" )
+  MESSAGE ( STATUS "Downloading conan.cmake from https://github.com/conan-io/cmake-conan" )
+  #FILE ( DOWNLOAD "https://raw.githubusercontent.com/conan-io/cmake-conan/v0.13/conan.cmake"
+  FILE ( DOWNLOAD "https://raw.githubusercontent.com/conan-io/cmake-conan/master/conan.cmake"
+                  "${CMAKE_BINARY_DIR}/conan.cmake")
+ENDIF ()
 
-# Openssl library build 를 포함 시킬경우
-OPTION (WITH_OPENSSL_BUILD "openssl build" ON)
-# libcurl build 를 포함 시킬 경우
-OPTION (WITH_LIBCURL_BUILD "libcurl build" ON)
-# http client build 를 포함 시킬 경우
-# 해당 옵션이 ON 인 경우 libcurl, openssl 는 자동으로 external 추가
-OPTION (WITH_HTTP_CLIENT_BUILD "gstd::client::http build" ON)
-# TEST build 적용
-OPTION (WITH_REFERENCE_TEST "reference make test" ON)
-# ExternalProject 에 등록된 라이브러리를 빌드하지 않는다.
-# 개발 및 테스트 진행을 위해 최초빌드는 필요하므로 default ON
-# 이후 개발진행시 추가적으로 external project 체크가 필요없으므로 OFF 하여 개발
-OPTION ( PASS_EXTERNAL_BUILD "Do not build external project" OFF )
+INCLUDE ( ${CMAKE_BINARY_DIR}/conan.cmake )
 
-IF (WITH_REFERENCE_TEST)
-MESSAGE ( "enable test" )
-# 테스트 설정
+# 개발서버 기준.
+# python 2.7.13, conan 1.17.2 환경에서 개발.
+#conan_check ( VERSION 1.17.2 REQUIRED )
+
+# 추가로 사용하는 conan remote repo 에 대하여 추가
+conan_add_remote(NAME mpusz
+                URL https://api.bintray.com/conan/mpusz/conan-mpusz)
+
+# maxminddb conan repo
+conan_add_remote(NAME monkeber-maxminddb
+                 URL https://api.bintray.com/conan/monkeber/monkeber )
+
+conan_add_remote(NAME ykjo 
+                 URL https://api.bintray.com/conan/ykjo/conan-cpp )
+
+#  conan_cmake_run ( CONANFILE conanfile.py BASIC_SETUP NO_OUTPUT_DIRS BUILD missing BUILD_TYPE Release VERBOSE)
+# BASIC_SETUP 옵션을 줄경우 conan_cmake_run 내부에서 conan_basic_setup 이 실행된다.
+#  conan_basic_setup 의 경우 output dirs 등의 전역 변수에 대한 설정이 실행되므로 
+# BASIC_SETUP 의 경우 별도의 conan_basic_setup 으로 처리한다.
+conan_cmake_run ( CONANFILE conanfile.py BUILD missing BUILD_TYPE Release VERBOSE)
+
+# conan_cmake_run 내부 함수에서 conan_load_buildinfo() 함수를 호출하여 conan build 로 생성되는 
+# 프로젝트 매크로 파일을 자동으로 load 한다.
+# 따라서 별도의 include 가 필요 없다.
+# INCLUDE ( ${CMAKE_BINARY_DIR}/conanbuildinfo.cmake )
+
+# conan 을 이용하여 빌드된 라이브러리의 타겟 매크로 설정
+# ARGUMENTS_NO_OUTPUT_DIRS 
+#   설정을 하지 않을 경우 conan_cmake_run 내부에서 output 경로를 빌드되는 디렉토리 기준으로 전역 설정한다.
+#   따라서 타겟별로 설정된 output 이 적용되지 않으므로, 타겟별로 output 을 별도 설정 한 경우 해당 옵션을 추가해야 한다.
+conan_basic_setup ( TARGETS NO_OUTPUT_DIRS )
+
+# conan 을 이용하여 설치한 라이브러리의 헤더경로 추가
+INCLUDE_DIRECTORIES ( ${CONAN_INCLUDE_DIRS} )
+
 ENABLE_TESTING()
-ENDIF (WITH_REFERENCE_TEST)
-
-# PREFIX 기준으로 별도로 설정하지 않을 경우의 경로
-# DOWNLOAD = <PREFIX>/src
-# SOURCE_DIR = <PREFIX>/src/<name>
-# BINARY_DIR = <PREFIX>/src/<name>-build
-# INSTALL_DIR = <PREFIX>
-
-# openssl, simple-zip 등에서 사용할 zlib
-IF ( PASS_EXTERNAL_BUILD )
-ExternalProject_Add(
-  project_zlib
-  GIT_REPOSITORY https://github.com/madler/zlib.git
-  GIT_TAG v1.2.11
-  PREFIX ${PROJECT_SOURCE_DIR}/libtemp/zlib
-  CONFIGURE_COMMAND ""
-  BUILD_COMMAND ""
-  INSTALL_COMMAND ""
-)
-ELSE ( PASS_EXTERNAL_BUILD )
-ExternalProject_Add(
-  project_zlib
-  GIT_REPOSITORY https://github.com/madler/zlib.git
-  GIT_TAG v1.2.11
-  PREFIX ${PROJECT_SOURCE_DIR}/libtemp/zlib
-  INSTALL_COMMAND ""
-)
-ENDIF ( PASS_EXTERNAL_BUILD )
-
-ExternalProject_Get_Property(project_zlib source_dir binary_dir)
-ADD_LIBRARY(zlib STATIC IMPORTED GLOBAL)
-SET_TARGET_PROPERTIES(zlib
-                      PROPERTIES
-                      "IMPORTED_LOCATION" "${binary_dir}/libz.a"
-) 
-ADD_DEPENDENCIES(zlib project_zlib)
-IF ((WITH_OPENSSL_BUILD) OR (WITH_HTTP_CLIENT_BUILD))
-  IF ( PASS_EXTERNAL_BUILD )
-    ExternalProject_Add(
-      project_openssl
-      PREFIX ${PROJECT_SOURCE_DIR}/libtemp/openssl
-      BINARY_DIR ${PROJECT_SOURCE_DIR}/libtemp/openssl/src/openssl
-      SOURCE_DIR ${PROJECT_SOURCE_DIR}/libtemp/openssl/src/openssl
-      INSTALL_DIR ${PROJECT_SOURCE_DIR}/libtemp/openssl/build
-      CONFIGURE_COMMAND ""
-      BUILD_COMMAND ""
-      INSTALL_COMMAND ""
-    )
-  ELSE ( PASS_EXTERNAL_BUILD )
-    MESSAGE ( "Openssl build" )
-    ExternalProject_Add(
-      project_openssl
-      GIT_REPOSITORY https://github.com/openssl/openssl.git
-      GIT_TAG OpenSSL_1_0_2p
-      DEPENDS project_zlib
-      PREFIX ${PROJECT_SOURCE_DIR}/libtemp/openssl
-      BINARY_DIR ${PROJECT_SOURCE_DIR}/libtemp/openssl/src/openssl
-      SOURCE_DIR ${PROJECT_SOURCE_DIR}/libtemp/openssl/src/openssl
-      INSTALL_DIR ${PROJECT_SOURCE_DIR}/libtemp/openssl/build
-      CONFIGURE_COMMAND ./config --prefix=<INSTALL_DIR> shared zlib
-      BUILD_COMMAND make
-    )
-  ENDIF ( PASS_EXTERNAL_BUILD )
-  ExternalProject_Get_Property(project_openssl source_dir binary_dir install_dir)
-  ADD_LIBRARY(libssl STATIC IMPORTED GLOBAL)
-  SET_TARGET_PROPERTIES( libssl
-                        PROPERTIES
-                        IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/libtemp/openssl/build/lib/libssl.a"
-  ) 
-  ADD_DEPENDENCIES(libssl project_openssl) 
-  ADD_LIBRARY(libcrypto STATIC IMPORTED)
-  SET_TARGET_PROPERTIES(libcrypto
-                      PROPERTIES
-                      IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/libtemp/openssl/build/lib/libcrypto.a"
-  ) 
-  INCLUDE_DIRECTORIES("${PROJECT_SOURCE_DIR}/libtemp/openssl/build/include")
-  ADD_DEPENDENCIES(libcrypto project_openssl) 
-ENDIF ((WITH_OPENSSL_BUILD) OR (WITH_HTTP_CLIENT_BUILD))
-
-# curl 의 cmake 의 경우 버전 3.4 이상을 요구하므로 그이하에서는 에러가 발생.
-IF ((WITH_LIBCURL_BUILD) OR (WITH_HTTP_CLIENT_BUILD))
-  MESSAGE ( "Curl library build" )
-
-  IF (VERSION VERSION_LESS 3.4)
-    IF ( PASS_EXTERNAL_BUILD )
-      ExternalProject_Add(
-        project_curl
-        PREFIX ${PROJECT_SOURCE_DIR}/libtemp/curl
-        BINARY_DIR ${PROJECT_SOURCE_DIR}/libtemp/curl/src/curl
-        SOURCE_DIR ${PROJECT_SOURCE_DIR}/libtemp/curl/src/curl
-        INSTALL_DIR ${PROJECT_SOURCE_DIR}/libtemp/curl/build
-        CONFIGURE_COMMAND ""
-        BUILD_COMMAND ""
-        INSTALL_COMMAND ""
-      )
-    ELSE ( PASS_EXTERNAL_BUILD )
-      MESSAGE ( "cmake < 3.4 build autoconf" )
-      ExternalProject_Add(
-        project_curl
-        URL https://curl.haxx.se/download/curl-7.61.1.zip
-        PREFIX ${PROJECT_SOURCE_DIR}/libtemp/curl
-        BINARY_DIR ${PROJECT_SOURCE_DIR}/libtemp/curl/src/curl
-        SOURCE_DIR ${PROJECT_SOURCE_DIR}/libtemp/curl/src/curl
-        INSTALL_DIR ${PROJECT_SOURCE_DIR}/libtemp/curl/build
-        DEPENDS project_openssl
-        CONFIGURE_COMMAND ./configure --prefix=<INSTALL_DIR> --with-ssl=${PROJECT_SOURCE_DIR}/libtemp/openssl/build --disable-ldap
-        BUILD_COMMAND make
-    )
-    ENDIF ( PASS_EXTERNAL_BUILD )
-  ELSE (VERSION VERSION_LESS 3.4)
-    IF ( PASS_EXTERNAL_BUILD )
-      ExternalProject_Add(
-        project_curl
-        PREFIX ${PROJECT_SOURCE_DIR}/libtemp/curl
-        BINARY_DIR ${PROJECT_SOURCE_DIR}/libtemp/curl/src/curl
-        SOURCE_DIR ${PROJECT_SOURCE_DIR}/libtemp/curl/src/curl
-        INSTALL_DIR ${PROJECT_SOURCE_DIR}/libtemp/curl/build
-        DEPENDS project_openssl
-        CONFIGURE_COMMAND ""
-        BUILD_COMMAND ""
-        INSTALL_COMMAND ""
-      )
-    ELSE ( PASS_EXTERNAL_BUILD )
-      MESSAGE ( "cmake > 3.4 build cmake" )
-      ExternalProject_Add(
-        project_curl
-        GIT_REPOSITORY https://github.com/curl/curl.git
-        GIT_TAG curl-7_61_1
-        DEPENDS project_openssl
-        PREFIX ${PROJECT_SOURCE_DIR}/libtemp/curl
-        CMAKE_ARGS -DCMAKE_USE_OPENSSL=ON -DOPENSSL_INCLUDE_DIR=${PROJECT_SOURCE_DIR}/libtemp/openssl/build/include
-      )
-    ENDIF ( PASS_EXTERNAL_BUILD )
-  ENDIF (VERSION VERSION_LESS 3.4)
-  ExternalProject_Get_Property(project_curl source_dir binary_dir install_dir)
-  ADD_LIBRARY(libcurl STATIC IMPORTED GLOBAL)
-  SET_TARGET_PROPERTIES(libcurl
-                        PROPERTIES
-                        IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/libtemp/curl/build/lib/libcurl.a")
-  ADD_DEPENDENCIES(libcurl project_curl) 
-  INCLUDE_DIRECTORIES ("${PROJECT_SOURCE_DIR}/libtemp/curl/build/include")
-  SET ( LIBTEMP_CURL ${PROJECT_SOURCE_DIR}/libtemp/curl/build)
-ENDIF ((WITH_LIBCURL_BUILD) OR (WITH_HTTP_CLIENT_BUILD))
-
-# hiredis 의 경우 makefile 하나로 빌드하며 해당 경로에서 결과가 출력
-# 별도의 install 을 하지않고 src 디렉토리를 include  와 library 참조에 사용한다.
-IF ( PASS_EXTERNAL_BUILD )
-  ExternalProject_Add(
-    hiredis
-    PREFIX ${PROJECT_SOURCE_DIR}/libtemp/hiredis
-    BINARY_DIR ${PROJECT_SOURCE_DIR}/libtemp/hiredis/src/hiredis
-    SOURCE_DIR ${PROJECT_SOURCE_DIR}/libtemp/hiredis/src/hiredis
-    CONFIGURE_COMMAND ""  # configure 실행 하지 않음.
-    BUILD_COMMAND ""
-    INSTALL_COMMAND ""    # make install 실행 하지 않음.
-  )
-ELSE ( PASS_EXTERNAL_BUILD )
-  ExternalProject_Add(
-    hiredis
-    GIT_REPOSITORY https://github.com/redis/hiredis.git
-    GIT_TAG v0.14.0
-    PREFIX ${PROJECT_SOURCE_DIR}/libtemp/hiredis
-    BINARY_DIR ${PROJECT_SOURCE_DIR}/libtemp/hiredis/src/hiredis
-    SOURCE_DIR ${PROJECT_SOURCE_DIR}/libtemp/hiredis/src/hiredis
-    CONFIGURE_COMMAND ""  # configure 실행 하지 않음.
-    BUILD_COMMAND make
-    INSTALL_COMMAND ""    # make install 실행 하지 않음.
-  )
-ENDIF ( PASS_EXTERNAL_BUILD )
-
-IF ( PASS_EXTERNAL_BUILD )
-  ExternalProject_Add(
-    maxminddb
-    PREFIX ${PROJECT_SOURCE_DIR}/libtemp/maxminddb
-    BINARY_DIR ${PROJECT_SOURCE_DIR}/libtemp/maxminddb/src/maxminddb
-    SOURCE_DIR ${PROJECT_SOURCE_DIR}/libtemp/maxminddb/src/maxminddb
-    INSTALL_DIR ${PROJECT_SOURCE_DIR}/libtemp/maxminddb/build
-    CONFIGURE_COMMAND ""
-    BUILD_COMMAND ""
-    INSTALL_COMMAND ""
-  )
-ELSE ( PASS_EXTERNAL_BUILD )
-  ExternalProject_Add(
-    maxminddb
-    GIT_REPOSITORY https://github.com/maxmind/libmaxminddb.git
-    GIT_TAG 1.3.2
-    PREFIX ${PROJECT_SOURCE_DIR}/libtemp/maxminddb
-    BINARY_DIR ${PROJECT_SOURCE_DIR}/libtemp/maxminddb/src/maxminddb
-    SOURCE_DIR ${PROJECT_SOURCE_DIR}/libtemp/maxminddb/src/maxminddb
-    INSTALL_DIR ${PROJECT_SOURCE_DIR}/libtemp/maxminddb/build
-    CONFIGURE_COMMAND ./configure --prefix=<INSTALL_DIR>
-    BUILD_COMMAND make
-  )
-
-  ExternalProject_Add_Step(maxminddb
-                          bootstrap
-                          COMMAND ./bootstrap
-                          DEPENDEES download
-                          DEPENDERS configure
-                          WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/libtemp/maxminddb/src/maxminddb)
-ENDIF ( PASS_EXTERNAL_BUILD )
-
-ExternalProject_Get_Property(maxminddb source_dir binary_dir install_dir)
-ADD_LIBRARY(libmaxminddb STATIC IMPORTED GLOBAL)
-ADD_DEPENDENCIES(libmaxminddb maxminddb)
-
-SET_TARGET_PROPERTIES(libmaxminddb
-                      PROPERTIES
-                      "IMPORTED_LOCATION" "${install_dir}/lib/libmaxminddb.a"
-                     )
-
-INCLUDE_DIRECTORIES("${install_dir}/include")
-# hiredis
-ExternalProject_Get_Property(hiredis source_dir binary_dir install_dir)
-ADD_LIBRARY(libhiredis STATIC IMPORTED GLOBAL)
-ADD_DEPENDENCIES(libhiredis hiredis)
-
-SET_TARGET_PROPERTIES(libhiredis
-                      PROPERTIES
-                      "IMPORTED_LOCATION" "${source_dir}/libhiredis.a"
-                     )
-INCLUDE_DIRECTORIES("${source_dir}")
 
 
 # 완전한 C++11 standard 제공은 gcc 4.8 이상 부터
@@ -306,17 +111,10 @@ ENDFOREACH()
 # static library 파일 빌드
 ADD_LIBRARY ( reference STATIC ${SOURCES} )
 
-ADD_DEPENDENCIES ( reference project_openssl )
-ADD_DEPENDENCIES ( reference project_curl )
-ADD_DEPENDENCIES ( reference project_zlib )
-ADD_DEPENDENCIES ( reference hiredis )
-ADD_DEPENDENCIES ( reference maxminddb )
-
 # library 출력경로 설정
 # shared 는 LIBRARY_OUTPUT_DIRECTORY, static library 는 ARCHIVE_OUTPUT_DIRECTORY 설정
 SET_TARGET_PROPERTIES ( reference
                         PROPERTIES
-                        #LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib )
                         ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib )
 
 # make cppcheck 추가
@@ -336,8 +134,5 @@ ENDIF ()
 #
 # src/bin 빌드
 ADD_SUBDIRECTORY ( src )
+ADD_SUBDIRECTORY ( test )
 
-# test 디렉토리 빌드
-IF (WITH_REFERENCE_TEST)
-ADD_SUBDIRECTORY(test)
-ENDIF (WITH_REFERENCE_TEST)
