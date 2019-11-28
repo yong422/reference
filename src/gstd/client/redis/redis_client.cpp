@@ -92,14 +92,19 @@ inline int parsing_set_replyObject(redisReply* re, std::string& msg)
     msg.assign("Error : ");
     msg += std::string(re->str);
   } else if (re->type == REDIS_REPLY_STATUS) {
-    if (!strcmp(re->str, "OK")) {
+    //  일반적인 Set 의 경우 OK 를 리턴한다.
+    //  MULTI 실행 후 Set 의 경우 QUEUED 를 리턴한다.
+    if (!strcmp(re->str, "OK") || !strcmp(re->str, "QUEUED")) {
       result = 0;
     } else {
       msg.assign("Status : ");
       msg += std::string(re->str);
     }
   } else if (re->type == REDIS_REPLY_INTEGER) {
-    // SETNX, MSETNX 등의 method 에서 integer return 이 존재함.
+    //  SETNX, MSETNX 등의 method 에서 integer return 이 존재함.
+    result = 0;
+  } else if (re->type == REDIS_REPLY_ARRAY) {
+    //  MULTI 실행 후 EXEC 일 경우 결과가 array 로 전달 된다.
     result = 0;
   } else {
     msg.assign("Unknown type : ");
@@ -478,10 +483,13 @@ int Client::Get(const std::string& key, uint32_t& val)
 {
   uint64_t get_value = 0;
   int result = Get(key, get_value);
-  if (!result && get_value <= static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
-    val = static_cast<uint32_t>(get_value);
-  } else {
-    result = -1;
+  if (!result) {
+    if (get_value <= static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
+      val = static_cast<uint32_t>(get_value);
+    } else {
+      // Get datatype 과 맞지 않을 경우 실패처리
+      result = -1;
+    }
   }
   return result;
 }
@@ -520,40 +528,48 @@ int Client::Set(const std::string& key, std::string val)
 
 int Client::Set(const char* key, const char* val)
 {
-  return Set_(util::StringTool::StringPrintf("SET %s %s", key, val));
+  return Set_(util::StringTool::StringPrintf("SET %s %s", key, val),
+              [](int result, redisReply* r) {return result;});
 }
 
 int Client::Set(const std::string& key, long long val)
 {
-  return Set_(util::StringTool::StringPrintf("SET %s %lld", key.c_str(), val));
+  return Set_(util::StringTool::StringPrintf("SET %s %lld", key.c_str(), val),
+              [](int result, redisReply* r) {return result;});
 }
 
 int Client::Set(const std::string& key, double val)
 {
-  return Set_(util::StringTool::StringPrintf("SET %s %.4f", key.c_str(), val));
+  return Set_(util::StringTool::StringPrintf("SET %s %.4f", key.c_str(), val),
+              [](int result, redisReply* r) {return result;});
 }
 
 int Client::Set(const std::string& key, int val)
 {
-  return Set_(util::StringTool::StringPrintf("SET %s %d", key.c_str(), val));
+  return Set_(util::StringTool::StringPrintf("SET %s %d", key.c_str(), val),
+              [](int result, redisReply* r) {return result;});
 }
 
 int Client::Set(const std::string& key, uint32_t val)
 {
-  return Set_(util::StringTool::StringPrintf("SET %s %u", key.c_str(), val));
+  return Set_(util::StringTool::StringPrintf("SET %s %u", key.c_str(), val),
+              [](int result, redisReply* r) {return result;});
 }
 
 int Client::Set(const std::string& key, uint64_t val)
 {
-  return Set_(util::StringTool::StringPrintf("SET %s %llu", key.c_str(), val));
+  return Set_(util::StringTool::StringPrintf("SET %s %llu", key.c_str(), val),
+              [](int result, redisReply* r) {return result;});
 }
 
 //* common private Set
-int Client::Set_(const std::string& command) noexcept
+int Client::Set_(const std::string& command, const set_reply_callback& process_result) noexcept
 {
   int result = 0;
   redis_reply_ = static_cast<redisReply*>(redisCommand(redis_context_, command.c_str()));
-  result = parsing_set_replyObject(redis_reply_, error_message_);
+  if (!(result = parsing_set_replyObject(redis_reply_, error_message_)) ) {
+    result = process_result(result, redis_reply_);
+  }
   FreeResult();
   return result;
 }
@@ -592,6 +608,85 @@ int Client::Delete(const std::initializer_list<std::string>& keys)
   std::vector<std::string> keys_vector(keys);
   return Delete(keys_vector);
 }
+
+int Client::Watch(const std::string& key)
+{
+  return Set_(util::StringTool::StringPrintf("WATCH %s", key.c_str()), 
+              [](int result, redisReply* r) {return result;});
+}
+
+int Client::Watch(const std::initializer_list<std::string>& keys)
+{
+  std::string keys_string = "";
+  std::for_each(keys.begin(), keys.end(), [&keys_string](const std::string& key) {
+    keys_string += key;
+    keys_string += " ";
+  });
+  return Watch(keys_string);
+  // return Set_(util::StringTool::StringPrintf("WATCH %s", keys_string.c_str()), 
+  //             [](int result, redisReply* r) {return result;});
+}
+
+int Client::CheckAndSet(const std::string& key, const std::string& val)
+{
+  int result = 0;
+  if ((result = Set_("MULTI", [](int result, redisReply* r) {return result;})) != 0) return result;
+
+  if (  (result = Set_(util::StringTool::StringPrintf("SET %s %s", 
+                                                  key.c_str(), 
+                                                  val.c_str()),
+                      [](int result, redisReply* r) {return result;})
+        ) 
+      != 0)  return result;
+
+  // MULTI 이후 EXEC 실행시 결과는 array 로 전달되므로 별도의 예외 처리.
+  return Set_("EXEC", [&](int result, redisReply* reply) {
+                        // 실행결과가 정상이며 
+                        if (!result && reply->element) {
+                          for (int i=0; i<reply->elements; i++) {
+                            //  result array 의 결과 상태값이 OK 가 아닌 값이 있을 경우 실패.
+                            if (strcmp(reply->element[i]->str, "OK")) {
+                              result = 1;
+                            }
+                          }
+                        }
+                        return result;
+                      }
+              );
+}
+
+int Client::CheckAndSet(const std::string& key, const uint64_t& val)
+{
+  return CheckAndSet(key, std::to_string(val));
+}
+
+int Client::UnWatch()
+{
+  return Set_("UNWATCH", [](int result, redisReply* r) {return result;});
+}
+
+int Client::Multi()
+{
+  return Set_("MULTI", [](int result, redisReply* r) {return result;});
+}
+
+int Client::Exec()
+{
+  return Set_("EXEC", [&](int result, redisReply* reply) {
+                        // 실행결과가 정상이며 
+                        if (!result && reply->element) {
+                          for (int i=0; i<reply->elements; i++) {
+                            //  result array 의 결과 상태값이 OK 가 아닌 값이 있을 경우 실패.
+                            if (strcmp(reply->element[i]->str, "OK")) {
+                              result = 1;
+                            }
+                          }
+                        }
+                        return result;
+                      }
+              );
+}
+
 
 //  @brief  redis-server 로 접속한다.
 //          설정된 접속정보를 사용.
@@ -670,59 +765,6 @@ bool Client::Connect()
     }
   }
   return result;
-}
-
-int32_t Client::Lock(const std::string key, const uint32_t& timeout) noexcept {
-  std::string lock_instance_key = GetLockInstanceKey_(key);
-  return Set_(util::StringTool::StringPrintf("SET %s %s NX PX %u",
-                                              lock_instance_key.c_str(),
-                                              GetUniqueId_(lock_instance_key).c_str(),
-                                              timeout));
-}
-
-// int32_t Client::LockContinue(const std::string key, const uint32_t& timeout) noexcept {
-
-// }
-
-int32_t Client::Unlock(const std::string key) noexcept {
-  std::string lock_instance_key = GetLockInstanceKey_(key);
-  std::string unique_id = "";
-  int32_t result = Get(lock_instance_key, unique_id);
-  if (!result) {
-    if (!unique_id.compare(GetUniqueId_(lock_instance_key))) {
-      // 가져온 unique id 와 동일한 id 일 경우 해당 커넥션의  lock instance 이므로 해제.
-      if (Delete(lock_instance_key) >= 0) {
-        // lock instance 삭제.
-        result = 0;
-      }
-    } else {
-      //  가져온 unique id 가 다를 경우 이미 만료되어 다른 커넥션으로 lock 의 권한이 넘어간 상태.
-      result = 1;
-    }
-  } else if (result == 1) {
-    // 만료되거나 다른 session 에서 Unlock 이후 lock instance 가 사라진 경우.
-    // Unlock 에 대한 정상 처리.
-    result = 0;
-  }
-  // result = -1 인 경우 기타 오류
-  return result;
-}
-
-std::string Client::GetUniqueId_(const std::string& lock_instance_key) noexcept {
-  std::string result = "";
-  auto it = lock_instance_cache_.find(lock_instance_key);
-  if (it != lock_instance_cache_.end()) {
-    result = it->second.first;
-  } else {
-    result = util::GenerateUUID(32);
-    lock_instance_cache_.insert(std::make_pair(lock_instance_key, 
-                                              std::make_pair(result, true)));
-  }
-  return result;
-}
-
-std::string Client::GetLockInstanceKey_(const std::string& key) noexcept {
-  return std::string(key + "redlock-key");
 }
 
 } // namespace redis

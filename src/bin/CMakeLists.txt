@@ -15,5 +15,5 @@ SET_TARGET_PROPERTIES ( ${BIN_NAME}
 TARGET_LINK_LIBRARIES (${BIN_NAME}
                        reference
                        pthread
-                       libmaxminddb
+                       CONAN_PKG::maxminddb
 )

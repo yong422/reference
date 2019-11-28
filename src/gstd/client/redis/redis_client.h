@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
+#include <functional>
 #include "hiredis.h"
 
 namespace gstd {
@@ -123,19 +124,57 @@ class Client{
   int Delete(const std::vector<std::string>&            keys);
   int Delete(const std::initializer_list<std::string>&  keys);
 
-  // @brief 분산 잠금을 구현하기 위한 Lock 함수
-  // @params  std::string key 접근을 제어하고자 하는 key, 
-  //                          내부에서 해당 key에 대한 잠금키를 생성하는데 사용.
-  //          uint32_t        잠금을 유지하는 타임아웃(ms)
-  // @return  0 : Lock, 1 : lock was not acquired, -1 : error
-  int32_t Lock(const std::string key, const uint32_t& timeout = kLockTimeout) noexcept;
-  //int32_t LockContinue(const std::string key, const uint32_t& timeout = kLockTimeout) noexcept;
-  int32_t Unlock(const std::string key) noexcept;
+  //  @brief  WATCH redis transaction 처리
+  //          전달된 key 에 WATCH 를 실행한다.
+  //          WATCH 가 실행된 상태에선 CheckAndSet 을 실행할 수 있다.
+  //  @return 0: 성공, -1 : 에러.
+  int Watch(const std::string& key);
+  //  @brief  multiple WATCH 에 대한 처리 함수.
+  //          Watch({"key1", "key2", "key3"});
+  int Watch(const std::initializer_list<std::string>& keys);
+
+  //  @brief  Watch 실행중인 key 에 대하여 CheckAndSet 방식으로 동작한다.
+  //          Watch 가 실행중인 상태에서 해당 key 에 대해 다른 connection 에서 값을 변경한 경우
+  //          CheckAndSet 실행시 null (1) 을 리턴한다.
+  //          Watch 를 실행하지 않은 상태에서는 일반적인 Set 과 동일하게 동작한다.
+  //  @return 0 : success, 1 : null, -1 : error
+  int CheckAndSet(const std::string& key, const std::string& val);
+  int CheckAndSet(const std::string& key, const uint64_t&    val);
+
+  //  @brief  WATCH 실행중인 모든 key 에 대한 해제 처리
+  //  @return 0: 성공, -1 : 에러.
+  int UnWatch();
+
+  //  @brief  redis MULTI 실행
+  int Multi();
+
+  //  @brief  redis EXEC 실행
+  int Exec();
 
 protected:
-  int Set_(const std::string& command) noexcept; 
-  inline std::string GetUniqueId_(const std::string& key) noexcept;
-  inline std::string GetLockInstanceKey_(const std::string& key) noexcept;
+
+  //  @brief  redis set 관련 결과값의 상세 처리를 위한 callback function object
+  //  @params int           내부 redis command 실행 결과의  parsing_set_replyObject 함수 리턴 값.
+  //  @params redisReply*   내부 redis command 실행 결과 object pointer
+  //  @return int
+  using set_reply_callback = std::function<int(int, redisReply*)>;
+
+  //  @brief  SET, MULTI, WATCH 등의 Set 관련 처리를 위한 공통 함수
+  //  @params const std::string& command  실행하기 위한 커맨드 (SET key value, MULTI 등)
+  //  @params const std::function<int(int, redisReply*)>& process_result  
+  //                  실행결과의 처리를 위한 callback function
+  //                  각 argument 는 다음과 같다.
+  //                  int : redis command 의 실행 결과 (0: 성공, 1:null, -1:실패)
+  //                  redisReply* : redis command 의 실행 결과가 저장된 object pointer
+  //                                multi exec 등의 실행결과가 array 등으로 전달되어 별도 처리가 필요한경우
+  //                                callback function 에 처리하여 전달.
+  //                                                    
+  //  @return int   callback function 에 정의된 리턴값.
+  //                별도의 처리가 필요 없을 경우 callback function 의 argument 로 전달되는 int 를 그대로 리턴.
+  //
+  //  @example  Set_("SET key1 val1", [](int result, redisReply* r) {return result;});
+
+  int Set_(const std::string& command, const set_reply_callback& process_result) noexcept;
 
 private:
   // private variable
@@ -150,11 +189,6 @@ private:
   bool          is_auth_        = false;
   redisContext* redis_context_  = nullptr;
   redisReply*   redis_reply_    = nullptr;
-
-  //  variable for redlock
-  //  현재 redis connection 에서 사용중인 잠금에 대한 캐시(lock key, value) 정보
-  //  lock key -> (unique value, )
-  std::unordered_map< std::string, std::pair<std::string, bool> >  lock_instance_cache_;
 };
 } // namespace redis
 } // namespace client

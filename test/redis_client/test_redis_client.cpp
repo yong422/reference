@@ -1,3 +1,4 @@
+#include <memory>
 #include <gtest/gtest.h>
 #include "gstd/client/redis/redis_client.h"
 
@@ -65,6 +66,9 @@ TEST_F(TestRedisClient, GetTest)
   EXPECT_EQ(static_cast<uint64_t>(std::numeric_limits<uint64_t>::max()), ullRet);
   // uint64_t 값으로 저장된 데이터에 대한 uint32_t 요청. 실패테스트.
   EXPECT_EQ(-1, redis_client->Get("key10", uRet));
+
+  // 없는 키에 대한 uint64_t 요청 실패테스트.
+  EXPECT_EQ(1, redis_client->Get("key55", uRet));
 }
 
 TEST_F(TestRedisClient, DeleteTest)
@@ -213,78 +217,162 @@ TEST_F(TestRedisClient, GetSetTest)
   EXPECT_EQ(1, redis_client->Delete({"numkey11"}));
 }
 
-class TestDerivedRedisClient : public gstd::client::redis::Client, public ::testing::Test {
- protected:
+//  multiple redis client 의 테스트를 위한 Fixture class
+class TestMultipleRedisClient : public ::testing::Test {
+protected:
   virtual void SetUp() {
-    redis_client
-      = new gstd::client::redis::Client("127.0.0.1", 6379, 0);
-    redis_client2
-      = new gstd::client::redis::Client("127.0.0.1", 6379, 0);
-    ASSERT_TRUE(redis_client->Connect());
-    ASSERT_TRUE(redis_client2->Connect());
+    //
+    first_redis_client = std::shared_ptr<gstd::client::redis::Client> 
+                          (new gstd::client::redis::Client("127.0.0.1", 6379, 0));
+    ASSERT_TRUE(first_redis_client->Connect());
+    second_redis_client = std::shared_ptr<gstd::client::redis::Client> 
+                            (new gstd::client::redis::Client("127.0.0.1", 6379, 0));
+    ASSERT_TRUE(second_redis_client->Connect());
   }
 
   virtual void TearDown() {
-    redis_client->Close();
-    redis_client2->Close();
-    delete redis_client;
-    delete redis_client2;
+    //
+    first_redis_client->Close();
+    second_redis_client->Close();
   }
-  gstd::client::redis::Client* redis_client;
-  gstd::client::redis::Client* redis_client2;
+  std::shared_ptr<gstd::client::redis::Client>  first_redis_client;
+  std::shared_ptr<gstd::client::redis::Client>  second_redis_client;
 };
 
-TEST_F(TestDerivedRedisClient, LockUtilTest)
+//  WATCH 가 미실행 되었을때의 CheckAndSet 테스트.
+//  WATCH 미실행 상태일 경우 CheckAndSet 은 일반적인 Set 과 동일하게 동작한다.
+TEST_F(TestMultipleRedisClient, CheckAndSetWithoutWatchTest)
 {
-  // 요청한 key 값이 최초 호출일 경우 unique id 를 생성하여 리턴하며 내부 캐싱.
-  std::string test_unique_id = GetUniqueId_("get-test-key");
-  EXPECT_FALSE(test_unique_id.empty());
-  // 동일한 key 요청시 내부 캐싱된 값을 리턴.
-  EXPECT_STREQ(test_unique_id.c_str(), GetUniqueId_("get-test-key").c_str());
-  std::string test_unique_id2 = GetUniqueId_("get-test-key");
-  EXPECT_STREQ(test_unique_id.c_str(), test_unique_id2.c_str());
+  //  Watch 호출 없이 CheckAndSet test
+  //  일반적인 Set 함수호출과 동일하게 동작
+  std::string get_value = "";
+  EXPECT_EQ(0, first_redis_client->Set("cns_key1", "cns_value1"));
+  EXPECT_EQ(0, first_redis_client->Get("cns_key1", get_value));
+  EXPECT_STREQ("cns_value1", get_value.c_str());
+  get_value.clear();
+  EXPECT_EQ(0, second_redis_client->Get("cns_key1", get_value));
+  EXPECT_STREQ("cns_value1", get_value.c_str());
 
-  test_unique_id2 = GetUniqueId_("get-test-key2");
-  EXPECT_STRNE(test_unique_id.c_str(), test_unique_id2.c_str());
-  test_unique_id = GetUniqueId_("get-test-key2");;
-  EXPECT_STREQ(test_unique_id.c_str(), test_unique_id2.c_str());
+  EXPECT_EQ(0, second_redis_client->CheckAndSet("cns_key1", "cns_value2"));
+  EXPECT_EQ(0, first_redis_client->CheckAndSet("cns_key1", "cns_value3"));
+  EXPECT_EQ(0, first_redis_client->Get("cns_key1", get_value));
+  EXPECT_STREQ("cns_value3", get_value.c_str());
+  first_redis_client->Delete("cns_key1");
 }
 
-TEST_F(TestDerivedRedisClient, LockUnlockTest)
-{
-  // my-get-key
-  EXPECT_EQ(0, redis_client->Lock("my-get-key", 10000));
-  usleep(10000);
-  // second connection 에서 동일한 키에 대한 lock instance 생성. 실패. 및 대기처리
-  EXPECT_EQ(1, redis_client2->Lock("my-get-key", 1000));
-  // 사용완료 후 unlock
-  EXPECT_EQ(0, redis_client->Unlock("my-get-key"));
-  usleep(1000);
-  // second connection 에서 해당 키에 대한 lock 재시도 성공
-  EXPECT_EQ(0, redis_client2->Lock("my-get-key", 1000));
-  usleep(1000);
-  // first connection 에서 이미 생성된 lock instance key 에 대한 lock 시도 실패.
-  EXPECT_EQ(1, redis_client->Lock("my-get-key", 10000));
-  // unique id 가 해당 connection 의 값이 아니므로 Unlock 불가.
-  EXPECT_EQ(1, redis_client->Unlock("my-get-key"));
-  // second session 의 lock instance 해제.
-  EXPECT_EQ(0, redis_client2->Unlock("my-get-key"));
-  // first session 의 empty lock instance 에 대한 해제는 성공.
-  EXPECT_EQ(0, redis_client->Unlock("my-get-key"));
 
+//  WATCH CheckAndSet(MULTI SET EXEC) 의 동작에 대한 테스트
+//  WATCH 실행중인 key 에 대하여 다른 커넥션에서 값을 변경할 경우의 실패 처리 테스트.
+TEST_F(TestMultipleRedisClient, CheckAndSetWithWatchTest)
+{
+  //  Watch 를 이용한 CheckAndSet 동작 테스트
+  std::string get_value = "";
+  EXPECT_EQ(0, first_redis_client->Set("cns_key1", "cns_value1"));
+  //  first client 에서 테스트키 WATCH
+  EXPECT_EQ(0, first_redis_client->Watch("cns_key1"));
+  //  second client 의 Get 에는 문제 없음.
+  EXPECT_EQ(0, second_redis_client->Get("cns_key1", get_value));
+  EXPECT_STREQ("cns_value1", get_value.c_str());
+
+  //  second clinet 에서 first client 가 WATCH 실행중인 키에 대한 값 변경
+  EXPECT_EQ(0, second_redis_client->Set("cns_key1", "cns_value2"));
+
+  //  first client 에서 CheckAndSet 실행시 실패처리.
+  EXPECT_EQ(1, first_redis_client->CheckAndSet("cns_key1", "cns_value3"));
+  //  fitst client 에서 변경 시도한 값이 아닌 second client 에서 변경한 값이 설정 된 상태.
+  EXPECT_EQ(0, first_redis_client->Get("cns_key1", get_value));
+  EXPECT_STREQ("cns_value2", get_value.c_str());
+
+  //  해당 key 에 대한 WATCH 재실행.
+  EXPECT_EQ(0, first_redis_client->Watch("cns_key1"));
+  //  정상적인 CheckAndSet 실행.
+  EXPECT_EQ(0, first_redis_client->CheckAndSet("cns_key1", "cns_value5"));
+  //  결과 확인.
+  EXPECT_EQ(0, first_redis_client->Get("cns_key1", get_value));
+  EXPECT_STREQ("cns_value5", get_value.c_str());
+  first_redis_client->Delete("cns_key1");
 }
 
-TEST_F(TestDerivedRedisClient, LockTimeoutTest)
+TEST_F(TestMultipleRedisClient, CheckAndSetWithUnWatchTest)
 {
-  // Lock timeout 에 의힌 만료 테스트 100 ms
-  EXPECT_EQ(0, redis_client->Lock("my-get-key", 1000));
-  // Lock 불가.
-  EXPECT_EQ(1, redis_client2->Lock("my-get-key", 1000));
-  usleep(100000);
-  EXPECT_EQ(1, redis_client2->Lock("my-get-key", 1000));
-  usleep(100000);
-  EXPECT_EQ(1, redis_client2->Lock("my-get-key", 1000));
-  usleep(800000);
-  EXPECT_EQ(0, redis_client2->Lock("my-get-key", 1000));
-  EXPECT_EQ(0, redis_client2->Unlock("my-get-key"));
+  std::string get_value = "";
+  EXPECT_EQ(0, first_redis_client->Set("cns_key1", "cns_value1"));
+  //  first client 에서 테스트키 WATCH
+  EXPECT_EQ(0, first_redis_client->Watch("cns_key1"));
+
+  //  second clinet 에서 first client 가 WATCH 실행중인 키에 대한 값 변경
+  EXPECT_EQ(0, second_redis_client->Set("cns_key1", "cns_value2"));
+  //  first client 에서 실행된 WATCH 에 대하여 해제.
+  //  WATCH 가 해제될 경우 다른 커넥션에서 해당 키를 변경하여도 CheckAndSet 실행시 정상처리.
+  EXPECT_EQ(0, first_redis_client->UnWatch());
+
+  //  first client 에서 CheckAndSet 실행시 WATCH 가 해제되었으므로 성공.
+  EXPECT_EQ(0, first_redis_client->CheckAndSet("cns_key1", "cns_value3"));
+  //  fitst client 에서 변경 시도한 값이 설정 된 상태.
+  EXPECT_EQ(0, first_redis_client->Get("cns_key1", get_value));
+  EXPECT_STREQ("cns_value3", get_value.c_str());
+
+  first_redis_client->Delete("cns_key1");
+}
+
+
+TEST_F(TestMultipleRedisClient, MultiTest)
+{
+  gstd::client::redis::MultipleData set_multiple_data = {{"mkey1", "val1"}, {"mkey2", "val2"}};
+
+  EXPECT_EQ(0, first_redis_client->Multi());
+  EXPECT_EQ(0, first_redis_client->SetMultiple(set_multiple_data, false));
+
+  //  MULTI 실행중 EXEC 를 실행하기 전의 데이터는 redis 의 큐에만 저장되는 상태.
+  std::string get_string = "";
+  EXPECT_EQ(1, second_redis_client->Get("mkey1", get_string));
+  EXPECT_EQ(1, second_redis_client->Get("mkey2", get_string));
+  //  EXEC 실행시 redis 에 반영 된다.
+  EXPECT_EQ(0, first_redis_client->Exec());
+
+  EXPECT_EQ(0, second_redis_client->Get("mkey1", get_string));
+  EXPECT_STREQ("val1", get_string.c_str());
+  EXPECT_EQ(0, second_redis_client->Get("mkey2", get_string));
+  EXPECT_STREQ("val2", get_string.c_str());
+
+  EXPECT_EQ(2, first_redis_client->Delete({"mkey1", "mkey2"}));
+}
+
+//  multi command 와 multiple watch 를 이용한 테스트
+
+TEST_F(TestMultipleRedisClient, MultiWithWatchTest)
+{
+  gstd::client::redis::MultipleData set_multiple_data
+    = {{"mkey1", "val1"}, {"mkey2", "val2"}, {"mkey3", "val3"}};
+  gstd::client::redis::MultipleData set_multiple_second_data
+    = {{"mkey1", "val1-1"}, {"mkey2", "val2-1"}, {"mkey3", "val2-1"}};
+  gstd::client::redis::MultipleData get_multiple_data
+    = {{"mkey1", ""}, {"mkey2", ""}, {"mkey3", ""}};
+
+  EXPECT_EQ(0, first_redis_client->SetMultiple(set_multiple_data, false));
+  //  여러 키에 대한 WATCH 실행
+  EXPECT_EQ(0, first_redis_client->Watch({"mkey1", "mkey2", "mkey3"}));
+  //  Check And Set 을 위한 MULTI 실행
+  EXPECT_EQ(0, first_redis_client->Multi());
+  
+  //  다른 커넥션에서의 값 변경. 실패 유도를 위한 설정.
+  EXPECT_EQ(0, second_redis_client->Set("mkey1", "val1-2"));
+
+  //  MULTI 실행중 SetMultiple 실행시 queue 에 추가되며 정상 값을 리턴.
+  EXPECT_EQ(0, first_redis_client->SetMultiple(set_multiple_second_data, false));
+
+  //  multiple WATCH 실행중인 key 값이 변경 되었으므로 exec 실행시 실패
+  EXPECT_EQ(1, first_redis_client->Exec());
+  uint32_t get_count = 0;
+  EXPECT_EQ(0, first_redis_client->GetMultiple(get_multiple_data, get_count));
+  EXPECT_EQ(3, get_count);
+
+  //  mkey1 의 값은 second client 에서 변경한 값으로 변경되어 있다.
+  EXPECT_STREQ(get_multiple_data["mkey1"].c_str(), "val1-2");
+
+  //  그외 multiple set 에서 실패한 다른 키의 경우는 기존의 값 그대로이다.
+  EXPECT_STREQ(get_multiple_data["mkey2"].c_str(), "val2");
+  EXPECT_STREQ(get_multiple_data["mkey3"].c_str(), "val3");
+
+  EXPECT_EQ(3, first_redis_client->Delete({"mkey1", "mkey2", "mkey3"}));
 }
